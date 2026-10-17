@@ -7,6 +7,7 @@ use customiesdevs\customies\block\CustomiesBlockFactory;
 use customiesdevs\customies\item\CustomiesItemFactory;
 use pocketmine\event\Listener;
 use pocketmine\event\server\DataPacketSendEvent;
+use pocketmine\network\mcpe\cache\StaticPacketCache;
 use pocketmine\network\mcpe\protocol\BiomeDefinitionListPacket;
 use pocketmine\network\mcpe\protocol\ItemRegistryPacket;
 use pocketmine\network\mcpe\protocol\ProtocolInfo;
@@ -15,7 +16,12 @@ use pocketmine\network\mcpe\protocol\StartGamePacket;
 use pocketmine\network\mcpe\protocol\types\BlockPaletteEntry;
 use pocketmine\network\mcpe\protocol\types\Experiments;
 use pocketmine\network\mcpe\protocol\types\ItemTypeEntry;
+use function array_merge;
+use function defined;
+use function hash;
 use function method_exists;
+use function strcmp;
+use function usort;
 
 final class CustomiesListener implements Listener {
 
@@ -63,7 +69,29 @@ final class CustomiesListener implements Listener {
 					break;//expect there is only one recipient
 				}
 				$packet->levelSettings->experiments = $this->experiments;
-				$packet->blockPalette = $this->cachedBlockPalette[$protocolId] ??= CustomiesBlockFactory::getInstance()->getBlockPaletteEntries($protocolId);
+
+				if(!isset($this->cachedBlockPalette[$protocolId])){
+					$customEntries = CustomiesBlockFactory::getInstance()->getBlockPaletteEntries($protocolId);
+					$protocol1_26_50 = defined(ProtocolInfo::class . '::PROTOCOL_1_26_50') ? ProtocolInfo::PROTOCOL_1_26_50 : 2193;
+					if($protocolId >= $protocol1_26_50 && method_exists(StaticPacketCache::getInstance(), "getBlockPaletteEntries")){
+						// Since 1.26.50 the vanilla data-driven blocks (double slabs etc.) are sent in this palette too, so
+						// they have to be merged in: dropping them would leave the client's palette missing those names
+						// while the server's BlockStateDictionary still has their states, shifting every network block
+						// runtime ID that comes after them.
+						$merged = array_merge(
+							StaticPacketCache::getInstance()->getBlockPaletteEntries(),
+							$customEntries
+						);
+						usort($merged, static function(BlockPaletteEntry $a, BlockPaletteEntry $b): int {
+							return strcmp(hash("fnv164", $a->getName()), hash("fnv164", $b->getName()));
+						});
+						$this->cachedBlockPalette[$protocolId] = $merged;
+					} else {
+						$this->cachedBlockPalette[$protocolId] = $customEntries;
+					}
+				}
+
+				$packet->blockPalette = $this->cachedBlockPalette[$protocolId];
 			} elseif($packet instanceof ResourcePackStackPacket) {
 				$packet->experiments = $this->experiments;
 			}
